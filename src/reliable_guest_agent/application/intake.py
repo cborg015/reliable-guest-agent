@@ -17,6 +17,14 @@ class IdempotencyConflictError(Exception):
     """Raised when a key is reused for a different request payload."""
 
 
+class ReservationAccessDeniedError(Exception):
+    """Raised for both missing reservations and unauthorized guests."""
+
+
+class ReservationServiceUnavailableError(Exception):
+    """Raised when reservation authorization cannot currently be completed."""
+
+
 @dataclass(frozen=True, slots=True)
 class IntakeCommand:
     guest_id: str
@@ -57,6 +65,10 @@ class IntakeRepository(Protocol):
     def find_result(self, *, guest_id: str, idempotency_key: str) -> IntakeResult | None: ...
 
 
+class ReservationAuthorizer(Protocol):
+    def require_booking_guest(self, *, guest_id: str, reservation_reference: str) -> None: ...
+
+
 def canonical_payload_hash(command: IntakeCommand) -> str:
     payload = {
         "guest_id": command.guest_id,
@@ -72,16 +84,22 @@ class IntakeGuestMessage:
     def __init__(
         self,
         repository: IntakeRepository,
+        reservation_authorizer: ReservationAuthorizer,
         *,
         id_factory: Callable[[], UUID] = uuid4,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
         self._repository = repository
+        self._reservation_authorizer = reservation_authorizer
         self._id_factory = id_factory
         self._clock = clock
 
     def execute(self, command: IntakeCommand) -> IntakeResult:
         self._validate(command)
+        self._reservation_authorizer.require_booking_guest(
+            guest_id=command.guest_id,
+            reservation_reference=command.reservation_reference,
+        )
         created_at = self._clock()
         message_id = self._id_factory()
         case_id = self._id_factory()

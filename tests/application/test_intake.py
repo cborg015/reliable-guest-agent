@@ -11,10 +11,13 @@ from reliable_guest_agent.application.intake import (
     IdempotencyConflictError,
     IntakeCommand,
     IntakeGuestMessage,
+    ReservationAccessDeniedError,
+    ReservationServiceUnavailableError,
 )
 from reliable_guest_agent.domain.enums import ProcessingStatus, RequestType
 from reliable_guest_agent.infrastructure.memory import (
     InMemoryIntakeRepository,
+    InMemoryReservationAuthorizer,
     SimulatedOutboxWriteError,
 )
 
@@ -45,6 +48,7 @@ def repository() -> InMemoryIntakeRepository:
 def use_case(repository: InMemoryIntakeRepository) -> IntakeGuestMessage:
     return IntakeGuestMessage(
         repository,
+        InMemoryReservationAuthorizer({"reservation-456": "guest-123"}),
         id_factory=sequential_ids(),
         clock=lambda: datetime(2026, 8, 31, 12, 0, tzinfo=UTC),
     )
@@ -155,3 +159,30 @@ def test_status_lookup_does_not_disclose_another_guests_intake(
     )
 
     assert found is None
+
+
+def test_unauthorized_guest_is_rejected_before_any_intake_is_stored(
+    repository: InMemoryIntakeRepository,
+) -> None:
+    use_case = IntakeGuestMessage(
+        repository,
+        InMemoryReservationAuthorizer({"reservation-456": "guest-999"}),
+    )
+
+    with pytest.raises(ReservationAccessDeniedError):
+        use_case.execute(make_command())
+
+    assert repository.counts == (0, 0, 0, 0)
+
+
+def test_reservation_outage_is_rejected_before_any_intake_is_stored(
+    repository: InMemoryIntakeRepository,
+) -> None:
+    authorizer = InMemoryReservationAuthorizer({"reservation-456": "guest-123"})
+    authorizer.unavailable = True
+    use_case = IntakeGuestMessage(repository, authorizer)
+
+    with pytest.raises(ReservationServiceUnavailableError):
+        use_case.execute(make_command())
+
+    assert repository.counts == (0, 0, 0, 0)

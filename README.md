@@ -14,7 +14,8 @@ Milestone 0 establishes the collaboratively designed product contract and its
 first executable application boundary:
 
 - FastAPI entry point with generated Swagger documentation
-- health endpoint
+- authenticated `POST /v1/intakes` and intake-status endpoints
+- demo bearer-token authentication with primary-booker authorization
 - documented workflow, privacy boundary, state model, retries, and safety
   invariants
 - framework-independent domain entities and legal state transitions
@@ -36,6 +37,25 @@ uvicorn reliable_guest_agent.api.main:app --reload
 ```
 
 Open `http://127.0.0.1:8000/docs` for Swagger UI.
+
+The local demo includes two synthetic bearer tokens. They are fixtures, not
+secrets or production credentials:
+
+- `demo-token-guest-123` authenticates the booking account for
+  `reservation-456`.
+- `demo-token-guest-999` authenticates a different guest and demonstrates the
+  privacy-safe authorization failure.
+
+In Swagger, call `POST /v1/intakes` with `demo-token-guest-123` in the bearer
+authorization field, a UUID in `Idempotency-Key`, and this body:
+
+```json
+{
+  "reservation_reference": "reservation-456",
+  "original_message": "Could I receive a refund?",
+  "selected_request_types": ["REFUND"]
+}
+```
 
 ## Test
 

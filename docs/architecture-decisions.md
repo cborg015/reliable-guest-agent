@@ -51,9 +51,9 @@ the original result; reuse with a different payload is rejected with
 
 **Status:** Accepted
 
-Intake persistence is synchronous. Authorization, redaction, AI interpretation,
-evidence validation, context retrieval, and retries execute asynchronously from
-durable checkpoints.
+Authentication, primary-booker authorization, and intake persistence are
+synchronous. Redaction, AI interpretation, evidence validation, context
+retrieval, and retries execute asynchronously from durable checkpoints.
 
 ## ADR-007: Orthogonal state dimensions
 
@@ -111,3 +111,19 @@ before database setup is introduced. The repository interface keeps the
 application service independent of this adapter. PostgreSQL remains required
 to prove real transactional and concurrency guarantees in the next persistence
 milestone.
+
+## ADR-013: Authorize the primary booking account before intake persistence
+
+**Status:** Accepted (supersedes the authorization timing in the original
+intake workflow)
+
+The API authenticates a synthetic bearer token and verifies that its canonical
+guest identity matches the reservation's booking account before storing message
+text or creating a case. Other listed guests are not authorized in v1 because
+case data is primarily tied to the booking account. Missing reservations and
+ownership mismatches share a generic `404` response to prevent enumeration.
+Dependency outages return `503`. Host, listing, and policy conditions remain
+background eligibility or routing concerns rather than authorization gates.
+
+Successful intake returns `202 Accepted`: the records are durable, but the
+guest-visible processing workflow remains incomplete.

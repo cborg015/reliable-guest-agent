@@ -51,8 +51,9 @@ The host or, after escalation, support retains final decision authority.
 
 The frontend generates an idempotency key when a submission begins, retains it
 across automatic retries, and sends it in the intake request header. The API
-atomically persists the key and request-payload hash while creating three
-records:
+first authenticates the caller and synchronously verifies that the authenticated
+guest is the account that booked the reservation. Only then does it atomically
+persist the key and request-payload hash while creating three records:
 
 1. an immutable inbound-message record;
 2. an empty case shell;
@@ -71,16 +72,24 @@ the authenticated guest. Unknown keys and keys associated with a different
 guest both return `404`, preventing disclosure that another guest's submission
 exists. Temporary lookup failures return `503`; malformed keys return `400`.
 
+Missing or invalid authentication returns `401`. A nonexistent reservation and
+a reservation owned by a different booking account return the same generic
+`404`, create no case, and store no message text. A reservation-service outage
+returns `503`, allowing the frontend to retain the form and retry safely. Host,
+listing, policy, ended-stay, and cancelled-reservation conditions do not change
+the guest's authority to submit; they are evaluated during background
+processing and may route the case to support.
+
 A background worker processes the case from durable checkpoints. The original
 message is immediately visible to the host with an `AI PROCESSING` label, but
 the host is not notified until the structured case is ready.
 
 ## Background workflow
 
-1. **Validate reservation authorization.** Verify that the reservation exists,
-   the sender is tied to it, and the listing and host match. A confirmed
-   authorization failure stops processing. A temporary dependency failure is
-   retried.
+1. **Refresh authoritative reservation context.** Recheck current reservation,
+   listing, and host data after synchronous primary-booker authorization. A
+   changed reservation refreshes affected downstream context. Invalid host or
+   listing state can route the case to support but does not erase the intake.
 2. **Redact sensitive information.** Replace personal names, phone numbers,
    email addresses, street addresses, account or payment identifiers,
    unnecessary reservation identifiers, medical-provider identities, and
@@ -214,6 +223,10 @@ checkpoint, relevant context, and last error—not only raw logs.
   idempotency record; a retry can create the complete intake.
 - Status lookup returns another guest's key exactly as it returns an unknown
   key.
+- Only the authenticated booking account can create a case; failed reservation
+  authorization stores no message text.
+- Successful intake returns `202 Accepted` with durable identifiers and the
+  external status `PROCESSING`.
 - Message, case shell, and outbox event are created atomically.
 - The original message never enters the model-provider boundary.
 - Redaction uncertainty bypasses AI and routes to support.

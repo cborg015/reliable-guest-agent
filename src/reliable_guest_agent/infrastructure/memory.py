@@ -7,6 +7,8 @@ from reliable_guest_agent.application.intake import (
     IdempotencyConflictError,
     IdempotencyRecord,
     IntakeResult,
+    ReservationAccessDeniedError,
+    ReservationServiceUnavailableError,
 )
 from reliable_guest_agent.domain.enums import ProcessingStatus
 from reliable_guest_agent.domain.models import Case, InboundMessage, OutboxEvent
@@ -96,4 +98,20 @@ class InMemoryIntakeRepository:
                 len(self._cases),
                 len(self._outbox_events),
                 len(self._idempotency_records),
+            )
+
+
+class InMemoryReservationAuthorizer:
+    def __init__(self, booking_guests: dict[str, str] | None = None) -> None:
+        self._booking_guests = dict(booking_guests or {})
+        self.unavailable = False
+
+    def require_booking_guest(self, *, guest_id: str, reservation_reference: str) -> None:
+        if self.unavailable:
+            raise ReservationServiceUnavailableError(
+                "Reservation authorization is temporarily unavailable"
+            )
+        if self._booking_guests.get(reservation_reference) != guest_id:
+            raise ReservationAccessDeniedError(
+                "Reservation was not found or guest is not authorized"
             )
