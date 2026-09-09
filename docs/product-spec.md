@@ -51,9 +51,24 @@ The host or, after escalation, support retains final decision authority.
 
 The frontend generates an idempotency key when a submission begins, retains it
 across automatic retries, and sends it in the intake request header. The API
-first authenticates the caller and synchronously verifies that the authenticated
-guest is the account that booked the reservation. Only then does it atomically
-persist the key and request-payload hash while creating three records:
+handles each submission in this order:
+
+1. authenticate the caller;
+2. validate the request;
+3. calculate the canonical request-payload hash;
+4. perform a guest-scoped idempotency lookup;
+5. synchronously verify primary-booker authorization only when no committed
+   idempotency record exists;
+6. atomically persist the intake.
+
+A matching committed replay returns the original intake receipt without
+contacting the reservation service. Authentication is never bypassed. The
+receipt contains only `message_id`, `case_id`, and the original external status
+`PROCESSING`; it does not authorize future access to full case data. Clients use
+the status endpoint rather than repeated POST requests to read changing state.
+
+For a new intake, the atomic operation persists the guest-scoped key and
+request-payload hash while creating three records:
 
 1. an immutable inbound-message record;
 2. an empty case shell;
@@ -63,14 +78,36 @@ Only after the transaction commits does the API return `message_id`, `case_id`,
 and the external status `PROCESSING`. Repeating the same guest-scoped key with
 the same payload returns the existing identifiers rather than creating
 duplicates. Reusing the key with a different payload returns `409 Conflict`.
+The response does not disclose the stored payload or hash. The atomic create
+operation repeats idempotency classification so concurrent misses cannot create
+duplicate cases.
+
+Request types are sorted before hashing because their order carries no meaning.
+Before hashing, message text is normalized to Unicode NFC, line endings are
+converted to LF, leading and trailing message whitespace is removed, consecutive
+spaces or tabs within a line are collapsed, whitespace-only lines are treated as
+blank, and multiple blank lines are collapsed to one. Case, punctuation,
+spelling, numbers, wording, and semantic differences remain significant. The
+exact original message is stored; normalization affects only idempotency
+comparison. Semantic deduplication is not part of intake idempotency.
+
 The backend retains the idempotency record with the case; it does not rely on a
 short expiry window that could allow a delayed retry to create a duplicate.
+
+If the idempotency repository is unavailable, the API cannot safely distinguish
+a new submission from a replay. It therefore returns `503 Service Unavailable`
+with `Retry-After: 10`, performs no reservation authorization, and writes
+nothing. Repository adapters translate known storage-availability failures into
+the stable application error; they do not disguise programming or data-integrity
+errors as temporary outages.
 
 When the frontend cannot confirm the intake response, it preserves the form and
 key and offers both a safe retry and a status check. Status lookup is scoped to
 the authenticated guest. Unknown keys and keys associated with a different
 guest both return `404`, preventing disclosure that another guest's submission
-exists. Temporary lookup failures return `503`; malformed keys return `400`.
+exists. Temporary lookup failures return `503` with `Retry-After: 10`; malformed
+keys return `400`. Clients retain the same key and payload, wait at least ten
+seconds, and use increasing backoff with jitter across repeated failures.
 
 Missing or invalid authentication returns `401`. A nonexistent reservation and
 a reservation owned by a different booking account return the same generic
@@ -218,7 +255,17 @@ checkpoint, relevant context, and last error—not only raw logs.
 
 - Duplicate intake calls with the same idempotency key return the same message
   and case identifiers.
+- Matching committed replays require authentication but do not repeat
+  reservation authorization.
+- POST replay returns the original `PROCESSING` receipt; current state is read
+  through the status endpoint.
 - Reusing an idempotency key with a different payload returns `409 Conflict`.
+- Approved Unicode and whitespace variations are canonicalized for idempotency,
+  while case, punctuation, spelling, numbers, wording, and meaning remain
+  significant.
+- An unavailable idempotency lookup returns `503` with `Retry-After: 10` before
+  reservation authorization and creates no records.
+- An unavailable status lookup returns `503` with `Retry-After: 10`.
 - A failure before intake commit leaves no message, case, outbox, or
   idempotency record; a retry can create the complete intake.
 - Status lookup returns another guest's key exactly as it returns an unknown

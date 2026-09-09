@@ -8,13 +8,12 @@ The first vertical slice handles a same-day message containing refund and
 reservation-transfer requests. It uses synthetic data and runs without a paid
 model API key.
 
-## Current milestone
+## Current implementation
 
-Milestone 0 establishes the collaboratively designed product contract and its
-first executable application boundary:
+The current local-first implementation provides:
 
 - FastAPI entry point with generated Swagger documentation
-- authenticated `POST /v1/intakes` and intake-status endpoints
+- authenticated HTTP `POST /v1/intakes` and `GET /v1/intakes/status` endpoints
 - demo bearer-token authentication with primary-booker authorization
 - documented workflow, privacy boundary, state model, retries, and safety
   invariants
@@ -23,9 +22,18 @@ first executable application boundary:
 - privacy-safe intake-status lookup scoped to the authenticated guest
 - deterministic tests covering domain invariants and workflow failures
 
-HTTP intake routes, PostgreSQL persistence, agent orchestration, retrieval, and
-local-model inference are deliberately deferred until their contracts are
-defined and proven in sequence.
+## Deferred work
+
+The current implementation atomically creates a pending outbox event, but it
+does not dispatch or process that event. The following capabilities remain
+deferred until their contracts are defined and proven in sequence:
+
+- PostgreSQL persistence
+- asynchronous outbox dispatch and workflow execution
+- sensitive-information redaction
+- AI interpretation
+- policy retrieval
+- host review
 
 ## Run locally
 

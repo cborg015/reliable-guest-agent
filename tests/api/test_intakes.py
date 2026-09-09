@@ -5,7 +5,11 @@ from uuid import uuid4
 import pytest
 from fastapi.testclient import TestClient
 
-from reliable_guest_agent.api.main import AUTHORIZATION_FAILURE_DETAIL, create_app
+from reliable_guest_agent.api.main import (
+    AUTHORIZATION_FAILURE_DETAIL,
+    REPOSITORY_UNAVAILABLE_DETAIL,
+    create_app,
+)
 from reliable_guest_agent.infrastructure.auth import SyntheticBearerAuthenticator
 from reliable_guest_agent.infrastructure.memory import (
     InMemoryIntakeRepository,
@@ -146,6 +150,82 @@ def test_changed_payload_with_same_key_returns_409(client: TestClient) -> None:
     assert conflict.status_code == 409
 
 
+def test_matching_replay_returns_original_receipt_during_reservation_outage(
+    client: TestClient,
+    authorizer: InMemoryReservationAuthorizer,
+) -> None:
+    key = str(uuid4())
+    first = client.post("/v1/intakes", json=request_body(), headers=headers(key=key))
+    authorizer.unavailable = True
+
+    replay = client.post("/v1/intakes", json=request_body(), headers=headers(key=key))
+
+    assert replay.status_code == 202
+    assert replay.json() == first.json()
+
+
+def test_conflicting_replay_returns_409_during_reservation_outage(
+    client: TestClient,
+    authorizer: InMemoryReservationAuthorizer,
+) -> None:
+    key = str(uuid4())
+    client.post("/v1/intakes", json=request_body(), headers=headers(key=key))
+    authorizer.unavailable = True
+
+    conflict = client.post(
+        "/v1/intakes",
+        json=request_body(original_message="Please transfer my reservation."),
+        headers=headers(key=key),
+    )
+
+    assert conflict.status_code == 409
+
+
+def test_replay_receipt_still_requires_authentication(client: TestClient) -> None:
+    key = str(uuid4())
+    client.post("/v1/intakes", json=request_body(), headers=headers(key=key))
+
+    replay = client.post(
+        "/v1/intakes",
+        json=request_body(),
+        headers={"Idempotency-Key": key},
+    )
+
+    assert replay.status_code == 401
+
+
+def test_authentication_precedes_replay_repository_access(
+    client: TestClient,
+    repository: InMemoryIntakeRepository,
+) -> None:
+    repository.fail_next_replay_lookup = True
+
+    response = client.post(
+        "/v1/intakes",
+        json=request_body(),
+        headers={"Idempotency-Key": str(uuid4())},
+    )
+
+    assert response.status_code == 401
+    assert repository.fail_next_replay_lookup is True
+
+
+def test_replay_lookup_outage_returns_retryable_503_without_writes(
+    client: TestClient,
+    repository: InMemoryIntakeRepository,
+    authorizer: InMemoryReservationAuthorizer,
+) -> None:
+    repository.fail_next_replay_lookup = True
+    authorizer.unavailable = True
+
+    response = client.post("/v1/intakes", json=request_body(), headers=headers())
+
+    assert response.status_code == 503
+    assert response.json() == {"detail": REPOSITORY_UNAVAILABLE_DETAIL}
+    assert response.headers["Retry-After"] == "10"
+    assert repository.counts == (0, 0, 0, 0)
+
+
 def test_status_lookup_is_scoped_to_authenticated_guest(client: TestClient) -> None:
     key = str(uuid4())
     created = client.post("/v1/intakes", json=request_body(), headers=headers(key=key))
@@ -159,6 +239,19 @@ def test_status_lookup_is_scoped_to_authenticated_guest(client: TestClient) -> N
     assert owner_lookup.status_code == 200
     assert owner_lookup.json()["case_id"] == created.json()["case_id"]
     assert other_lookup.status_code == 404
+
+
+def test_status_lookup_outage_returns_retryable_503(
+    client: TestClient,
+    repository: InMemoryIntakeRepository,
+) -> None:
+    repository.fail_next_status_lookup = True
+
+    response = client.get("/v1/intakes/status", headers=headers())
+
+    assert response.status_code == 503
+    assert response.json() == {"detail": REPOSITORY_UNAVAILABLE_DETAIL}
+    assert response.headers["Retry-After"] == "10"
 
 
 def test_malformed_idempotency_key_returns_400(client: TestClient) -> None:

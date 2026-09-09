@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
+import unicodedata
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -15,6 +17,10 @@ from reliable_guest_agent.domain.models import Case, InboundMessage, OutboxEvent
 
 class IdempotencyConflictError(Exception):
     """Raised when a key is reused for a different request payload."""
+
+
+class IntakeRepositoryUnavailableError(Exception):
+    """Raised when intake persistence cannot safely answer a request."""
 
 
 class ReservationAccessDeniedError(Exception):
@@ -53,6 +59,14 @@ class IntakeResult:
 
 
 class IntakeRepository(Protocol):
+    def find_replay(
+        self,
+        *,
+        guest_id: str,
+        idempotency_key: str,
+        request_payload_hash: str,
+    ) -> IntakeResult | None: ...
+
     def create_or_replay(
         self,
         *,
@@ -69,10 +83,28 @@ class ReservationAuthorizer(Protocol):
     def require_booking_guest(self, *, guest_id: str, reservation_reference: str) -> None: ...
 
 
+def canonicalize_message(value: str) -> str:
+    normalized = unicodedata.normalize("NFC", value)
+    normalized = normalized.replace("\r\n", "\n").replace("\r", "\n").strip()
+
+    canonical_lines: list[str] = []
+    previous_line_was_blank = False
+    for line in normalized.split("\n"):
+        canonical_line = re.sub(r"[ \t]+", " ", line)
+        if not canonical_line.strip(" \t"):
+            canonical_line = ""
+        is_blank = canonical_line == ""
+        if is_blank and previous_line_was_blank:
+            continue
+        canonical_lines.append(canonical_line)
+        previous_line_was_blank = is_blank
+    return "\n".join(canonical_lines)
+
+
 def canonical_payload_hash(command: IntakeCommand) -> str:
     payload = {
         "guest_id": command.guest_id,
-        "original_message": command.original_message,
+        "original_message": canonicalize_message(command.original_message),
         "reservation_reference": command.reservation_reference,
         "selected_request_types": sorted(item.value for item in command.selected_request_types),
     }
@@ -96,6 +128,15 @@ class IntakeGuestMessage:
 
     def execute(self, command: IntakeCommand) -> IntakeResult:
         self._validate(command)
+        request_payload_hash = canonical_payload_hash(command)
+        replay = self._repository.find_replay(
+            guest_id=command.guest_id,
+            idempotency_key=command.idempotency_key,
+            request_payload_hash=request_payload_hash,
+        )
+        if replay is not None:
+            return replay
+
         self._reservation_authorizer.require_booking_guest(
             guest_id=command.guest_id,
             reservation_reference=command.reservation_reference,
@@ -122,7 +163,7 @@ class IntakeGuestMessage:
         record = IdempotencyRecord(
             guest_id=command.guest_id,
             key=command.idempotency_key,
-            request_payload_hash=canonical_payload_hash(command),
+            request_payload_hash=request_payload_hash,
             message_id=message_id,
             case_id=case_id,
             created_at=created_at,

@@ -13,6 +13,7 @@ from reliable_guest_agent.application.intake import (
     IntakeCommand,
     IntakeGuestMessage,
     IntakeRepository,
+    IntakeRepositoryUnavailableError,
     ReservationAccessDeniedError,
     ReservationAuthorizer,
     ReservationServiceUnavailableError,
@@ -32,6 +33,8 @@ AUTHORIZATION_FAILURE_DETAIL = (
     "We couldn't verify that you can submit a request for this reservation."
 )
 NOT_FOUND_DETAIL = "Submission not found."
+REPOSITORY_UNAVAILABLE_DETAIL = "Intake records are temporarily unavailable."
+RETRY_AFTER_SECONDS = "10"
 bearer_scheme = HTTPBearer(auto_error=False, scheme_name="SyntheticBearer")
 
 
@@ -155,6 +158,12 @@ def create_app(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="Idempotency key was already used with a different payload.",
             ) from error
+        except IntakeRepositoryUnavailableError as error:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=REPOSITORY_UNAVAILABLE_DETAIL,
+                headers={"Retry-After": RETRY_AFTER_SECONDS},
+            ) from error
         except DomainInvariantError as error:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -175,10 +184,17 @@ def create_app(
         idempotency_key: Annotated[str, Header(alias="Idempotency-Key")],
     ) -> IntakeResponse:
         key = _parse_idempotency_key(idempotency_key)
-        result = CheckIntakeStatus(request.app.state.intake_repository).execute(
-            guest_id=guest.guest_id,
-            idempotency_key=key,
-        )
+        try:
+            result = CheckIntakeStatus(request.app.state.intake_repository).execute(
+                guest_id=guest.guest_id,
+                idempotency_key=key,
+            )
+        except IntakeRepositoryUnavailableError as error:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=REPOSITORY_UNAVAILABLE_DETAIL,
+                headers={"Retry-After": RETRY_AFTER_SECONDS},
+            ) from error
         if result is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=NOT_FOUND_DETAIL)
         return IntakeResponse(message_id=result.message_id, case_id=result.case_id)

@@ -6,6 +6,7 @@ from uuid import UUID
 from reliable_guest_agent.application.intake import (
     IdempotencyConflictError,
     IdempotencyRecord,
+    IntakeRepositoryUnavailableError,
     IntakeResult,
     ReservationAccessDeniedError,
     ReservationServiceUnavailableError,
@@ -28,6 +29,35 @@ class InMemoryIntakeRepository:
         self._idempotency_records: dict[tuple[str, str], IdempotencyRecord] = {}
         self._lock = RLock()
         self.fail_next_outbox_write = False
+        self.fail_next_replay_lookup = False
+        self.fail_next_status_lookup = False
+
+    def find_replay(
+        self,
+        *,
+        guest_id: str,
+        idempotency_key: str,
+        request_payload_hash: str,
+    ) -> IntakeResult | None:
+        with self._lock:
+            if self.fail_next_replay_lookup:
+                self.fail_next_replay_lookup = False
+                raise IntakeRepositoryUnavailableError(
+                    "Intake replay lookup is temporarily unavailable"
+                )
+            record = self._idempotency_records.get((guest_id, idempotency_key))
+            if record is None:
+                return None
+            if record.request_payload_hash != request_payload_hash:
+                raise IdempotencyConflictError(
+                    "Idempotency key was already used with a different payload"
+                )
+            return IntakeResult(
+                message_id=record.message_id,
+                case_id=record.case_id,
+                processing_status=ProcessingStatus.NOT_STARTED,
+                replayed=True,
+            )
 
     def create_or_replay(
         self,
@@ -79,6 +109,11 @@ class InMemoryIntakeRepository:
 
     def find_result(self, *, guest_id: str, idempotency_key: str) -> IntakeResult | None:
         with self._lock:
+            if self.fail_next_status_lookup:
+                self.fail_next_status_lookup = False
+                raise IntakeRepositoryUnavailableError(
+                    "Intake status lookup is temporarily unavailable"
+                )
             record = self._idempotency_records.get((guest_id, idempotency_key))
             if record is None:
                 return None

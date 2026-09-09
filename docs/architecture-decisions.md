@@ -127,3 +127,41 @@ background eligibility or routing concerns rather than authorization gates.
 
 Successful intake returns `202 Accepted`: the records are durable, but the
 guest-visible processing workflow remains incomplete.
+
+## ADR-014: Classify committed replay before mutable authorization
+
+**Status:** Accepted (refines the sequencing in ADR-013 for committed replays)
+
+Every intake request still requires authentication and request validation. The
+application then calculates a canonical payload hash and asks the repository to
+classify the guest-scoped idempotency key before contacting the reservation
+service. A matching committed record returns only the original intake receipt.
+A conflicting payload returns `409 Conflict`. Reservation authorization runs
+only after the repository confirms that no committed record exists.
+
+This ordering makes recovery deterministic when reservation data changes or the
+reservation service is temporarily unavailable. Returning a receipt does not
+authorize access to full case data; future case endpoints must independently
+authorize the caller. POST replays return the immutable original `PROCESSING`
+receipt, while the status endpoint remains responsible for current state.
+
+The repository owns replay-versus-conflict classification so stored hashes and
+record details do not cross the persistence boundary. The atomic
+`create_or_replay` operation repeats classification because concurrent requests
+may both observe an initial miss. This second check preserves the single
+guest-and-key mapping under races.
+
+Canonical hashing sorts request types and applies deterministic, narrowly scoped
+Unicode and whitespace normalization to message text. It preserves case,
+punctuation, spelling, numbers, wording, and meaning. The immutable original
+message remains unchanged in storage. Semantic deduplication is a separate
+concern and is excluded from intake idempotency because probabilistic matching
+could silently discard a changed request and would conflict with the pre-model
+privacy boundary.
+
+An unavailable idempotency repository is not treated as a missing record. The
+operation fails closed before reservation authorization or writes, and the API
+returns `503 Service Unavailable` with `Retry-After: 10`. Status-lookup outages
+use the same response contract. Repository adapters translate recognized
+storage-availability failures into `IntakeRepositoryUnavailableError`; unknown
+programming and data-integrity failures remain visible as distinct failures.
