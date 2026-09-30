@@ -94,6 +94,20 @@ comparison. Semantic deduplication is not part of intake idempotency.
 The backend retains the idempotency record with the case; it does not rely on a
 short expiry window that could allow a delayed retry to create a duplicate.
 
+The PostgreSQL adapter commits the inbound message, its selected request-type
+rows, the case shell, the outbox event, and the idempotency record in one
+transaction. The idempotency record is the sole owner of the guest-scoped key
+and references the message and case through foreign keys. The message does not
+duplicate the key. PostgreSQL enforces required relationships, recognized
+stored values, nonnegative counters, and uniqueness while Python retains
+workflow and authorization rules.
+
+Concurrent creators use optimistic concurrency at PostgreSQL's default
+`READ COMMITTED` isolation level. A named primary-key constraint on guest and
+idempotency key selects one committed winner. A losing transaction rolls back
+all attempted rows, rereads the winner, and returns replay or conflict based on
+the stored hash. Unrelated integrity failures are not treated as replays.
+
 If the idempotency repository is unavailable, the API cannot safely distinguish
 a new submission from a replay. It therefore returns `503 Service Unavailable`
 with `Retry-After: 10`, performs no reservation authorization, and writes
@@ -295,3 +309,5 @@ checkpoint, relevant context, and last error—not only raw logs.
 - Multi-property tenancy and billing
 - AI-generated response drafting
 - AI-generated urgency or medical-severity judgments
+- Protection of direct database or backup access through field-level message
+  encryption and production key management; all current data remains synthetic

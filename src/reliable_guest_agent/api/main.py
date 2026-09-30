@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from typing import Annotated, Literal
 from uuid import UUID
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy import Engine, create_engine
 
 from reliable_guest_agent.application.intake import (
     CheckIntakeStatus,
@@ -28,6 +31,8 @@ from reliable_guest_agent.infrastructure.memory import (
     InMemoryIntakeRepository,
     InMemoryReservationAuthorizer,
 )
+from reliable_guest_agent.infrastructure.postgres import PostgresIntakeRepository
+from reliable_guest_agent.infrastructure.settings import ApplicationSettings
 
 AUTHORIZATION_FAILURE_DETAIL = (
     "We couldn't verify that you can submit a request for this reservation."
@@ -92,17 +97,37 @@ def create_app(
     intake_repository: IntakeRepository | None = None,
     reservation_authorizer: ReservationAuthorizer | None = None,
     authenticator: SyntheticBearerAuthenticator | None = None,
+    settings: ApplicationSettings | None = None,
 ) -> FastAPI:
+    database_engine: Engine | None = None
+    if intake_repository is None:
+        application_settings = settings or ApplicationSettings()
+        if application_settings.database_url is not None:
+            database_engine = create_engine(
+                application_settings.database_url,
+                pool_pre_ping=True,
+            )
+            intake_repository = PostgresIntakeRepository(database_engine)
+        else:
+            intake_repository = InMemoryIntakeRepository()
+
+    @asynccontextmanager
+    async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+        yield
+        if database_engine is not None:
+            database_engine.dispose()
+
     application = FastAPI(
         title="Reliable Guest Agent",
         version="0.2.0",
         description="Guest request triage with explicit human approval boundaries.",
+        lifespan=lifespan,
     )
-    repository = intake_repository or InMemoryIntakeRepository()
     authorizer = reservation_authorizer or InMemoryReservationAuthorizer(
         {"reservation-456": "guest-123"}
     )
-    application.state.intake_repository = repository
+    application.state.intake_repository = intake_repository
+    application.state.database_engine = database_engine
     application.state.reservation_authorizer = authorizer
     application.state.authenticator = authenticator or SyntheticBearerAuthenticator(
         {

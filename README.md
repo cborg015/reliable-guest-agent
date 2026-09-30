@@ -18,17 +18,18 @@ The current local-first implementation provides:
 - documented workflow, privacy boundary, state model, retries, and safety
   invariants
 - framework-independent domain entities and legal state transitions
-- in-memory atomic intake prototype with idempotent replay and rollback
+- PostgreSQL and in-memory intake repositories with atomic replay and rollback
+- versioned Alembic migrations and a local Docker Compose database
 - privacy-safe intake-status lookup scoped to the authenticated guest
 - deterministic tests covering domain invariants and workflow failures
 
 ## Deferred work
 
-The current implementation atomically creates a pending outbox event, but it
-does not dispatch or process that event. The following capabilities remain
-deferred until their contracts are defined and proven in sequence:
+The current implementation atomically creates a pending outbox event in
+PostgreSQL, but it does not dispatch or process that event. The following
+capabilities remain deferred until their contracts are defined and proven in
+sequence:
 
-- PostgreSQL persistence
 - asynchronous outbox dispatch and workflow execution
 - sensitive-information redaction
 - AI interpretation
@@ -41,8 +42,15 @@ deferred until their contracts are defined and proven in sequence:
 python -m venv .venv
 source .venv/bin/activate  # Windows PowerShell: .venv\Scripts\Activate.ps1
 python -m pip install -e ".[dev]"
+cp .env.example .env       # Windows PowerShell: Copy-Item .env.example .env
+docker compose up -d --wait postgres
+alembic upgrade head
 uvicorn reliable_guest_agent.api.main:app --reload
 ```
+
+The checked-in database credentials are local synthetic defaults only. Docker
+binds PostgreSQL to `127.0.0.1`. Alembic uses the migration role, while the API
+uses a runtime role that cannot change the schema.
 
 Open `http://127.0.0.1:8000/docs` for Swagger UI.
 
@@ -67,9 +75,23 @@ authorization field, a UUID in `Idempotency-Key`, and this body:
 
 ## Test
 
+Fast dependency-free tests:
+
 ```bash
-pytest
+pytest -m "not postgres"
 ```
+
+PostgreSQL integration tests recreate only the dedicated
+`reliable_guest_agent_test` schema through migrations. They refuse to run the
+destructive reset against any other database. In PowerShell:
+
+```powershell
+$env:RGA_TEST_DATABASE_URL = "postgresql+psycopg://rga_runtime:local-runtime-only@127.0.0.1:5432/reliable_guest_agent_test"
+$env:RGA_TEST_MIGRATION_DATABASE_URL = "postgresql+psycopg://rga_migrator:local-migration-only@127.0.0.1:5432/reliable_guest_agent_test"
+.venv\Scripts\python.exe -m pytest tests/integration -m postgres -p no:cacheprovider
+```
+
+Run both commands before completing a persistence milestone.
 
 ## Project documents
 

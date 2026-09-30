@@ -36,7 +36,6 @@ class InboundMessage:
     sender_reference: str
     original_text: str
     selected_request_types: tuple[RequestType, ...]
-    idempotency_key: str
     received_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 
     def __post_init__(self) -> None:
@@ -44,7 +43,6 @@ class InboundMessage:
             "reservation_reference": self.reservation_reference,
             "sender_reference": self.sender_reference,
             "original_text": self.original_text,
-            "idempotency_key": self.idempotency_key,
         }
         for name, value in required_values.items():
             if not value.strip():

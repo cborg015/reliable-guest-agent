@@ -1,0 +1,22 @@
+services:
+  postgres:
+    image: postgres:18
+    environment:
+      POSTGRES_DB: reliable_guest_agent_dev
+      POSTGRES_PASSWORD: ${RGA_POSTGRES_ADMIN_PASSWORD:-local-admin-only}
+      POSTGRES_USER: rga_admin
+      RGA_MIGRATION_PASSWORD: ${RGA_MIGRATION_PASSWORD:-local-migration-only}
+      RGA_RUNTIME_PASSWORD: ${RGA_RUNTIME_PASSWORD:-local-runtime-only}
+    ports:
+      - "127.0.0.1:${RGA_POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql
+      - ./docker/postgres/init-roles.sh:/docker-entrypoint-initdb.d/01-init-roles.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U rga_admin -d reliable_guest_agent_dev"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+
+volumes:
+  postgres-data:

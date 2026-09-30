@@ -151,7 +151,6 @@ class IntakeGuestMessage:
             sender_reference=command.guest_id,
             original_text=command.original_message,
             selected_request_types=command.selected_request_types,
-            idempotency_key=command.idempotency_key,
             received_at=created_at,
         )
         case = Case(id=case_id, message_id=message_id)

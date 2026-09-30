@@ -165,3 +165,41 @@ returns `503 Service Unavailable` with `Retry-After: 10`. Status-lookup outages
 use the same response contract. Repository adapters translate recognized
 storage-availability failures into `IntakeRepositoryUnavailableError`; unknown
 programming and data-integrity failures remain visible as distinct failures.
+
+## ADR-015: PostgreSQL persistence with explicit relational boundaries
+
+**Status:** Accepted
+
+The production-oriented adapter uses synchronous SQLAlchemy Core with psycopg
+and versioned Alembic migrations. Persistence tables remain separate from the
+framework-independent domain models. Fixed values use readable text columns
+with named `CHECK` constraints rather than PostgreSQL-native enums. PostgreSQL
+enforces structural and deterministic row invariants; Python continues to own
+authorization, replay classification, workflow transitions, privacy behavior,
+and human decision authority.
+
+The idempotency record solely owns the guest-scoped key and references its
+message and case with foreign keys. Guest-selected request types are immutable
+child rows with a composite primary key because their order is irrelevant. The
+message does not duplicate the idempotency key.
+
+All intake rows commit in one `READ COMMITTED` transaction. Concurrent initial
+misses use optimistic concurrency: a named guest-and-key constraint selects the
+winner, the loser rolls back completely, and the repository rereads the winner
+to classify replay or conflict. Only that named constraint is handled as an
+idempotency race; other integrity errors remain visible.
+
+Local PostgreSQL runs as a visible Docker Compose service. Alembic uses a
+migration role that owns schema changes, while the API uses a least-privileged
+runtime role. Tests use a dedicated database and refuse schema reset unless both
+the configured URL and PostgreSQL's reported database name equal
+`reliable_guest_agent_test`. Ordinary adapter tests use rollback isolation;
+commit-sensitive concurrency tests use separate connections and explicit
+cleanup. The same behavioral contract runs against the in-memory and PostgreSQL
+adapters.
+
+All current data is synthetic. Field-level encryption and production key
+management are deliberately deferred rather than represented by an incomplete
+key boundary. The local database is bound to loopback, original messages must
+not be logged, and direct database or backup compromise remains outside the
+current protection boundary.
